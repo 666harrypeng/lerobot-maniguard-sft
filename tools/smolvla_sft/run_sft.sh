@@ -61,7 +61,10 @@ EXP_NAME="${EXP_NAME:-$(basename "$OUTPUT")}"
 [ -n "${WANDB_API_KEY:-}" ] || { echo "ERROR: WANDB_API_KEY unset (online training logs)." >&2; exit 1; }
 [ -n "${HF_TOKEN:-}" ]      || { echo "ERROR: HF_TOKEN unset (base-model $BASE_MODEL pull)." >&2; exit 1; }
 command -v lerobot-train >/dev/null 2>&1 || { echo "ERROR: lerobot-train not on PATH -- pip install -e '.[smolvla]'." >&2; exit 1; }
-mkdir -p "$OUTPUT"
+# Do NOT pre-create $OUTPUT: lerobot-train's validate() refuses a pre-existing output_dir
+# (unless --resume). Only ensure its PARENT exists (the symlinked runs/ dir); lerobot
+# creates the fresh output_dir itself.
+mkdir -p "$(dirname "$OUTPUT")"
 
 # cap per-worker math threads so WORKERS x GPUS dataloader procs don't oversubscribe CPU.
 : "${OMP_NUM_THREADS:=1}"; export OMP_NUM_THREADS
