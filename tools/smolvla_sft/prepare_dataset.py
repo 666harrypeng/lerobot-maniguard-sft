@@ -33,8 +33,23 @@ Then the copy is **upgraded v2.1 -> v3.0** in place via lerobot's
 the v2.1 backup ``<out>_old`` is removed. Net output = a v3.0, 2-cam, standard-keyed
 dataset that ``lerobot-train`` loads directly.
 
-Idempotent: a complete already-converted v3.0 ``out`` is a no-op; anything else
-(partial, or a v2.1 build interrupted before conversion) is rebuilt from scratch.
+**One episode per video file** (``video_file_size_in_mb=1``): v3.0 by default packs
+episodes into ~200 MB videos (``DEFAULT_VIDEO_FILE_SIZE_IN_MB``), so an episode's
+``videos/<key>/from_timestamp`` (its offset inside the packed file, ``dataset_reader``:
+``shifted_query_ts = from_timestamp + ts``) reaches thousands of seconds. At such large
+timestamps torchcodec's frame lookup ``round(ts * average_fps)`` (``video_utils``) drifts
+by a whole frame -> ``FrameTimestampError`` (and the big packed files are also why the
+pyav backend was slow: re-open + deep-seek per ``__getitem__``). Forcing one episode per
+file keeps ``from_timestamp == 0`` (it resets at each file boundary in
+``convert_videos_of_camera``), so every query timestamp stays in ``[0, episode_len]`` and
+both backends are correct + fast -- the same per-episode layout the GR00T track uses. The
+parquet ``timestamp`` column is episode-relative regardless of ``data_file_size_in_mb``
+(``concat_data_files`` copies it verbatim), so only the *video* files must be per-episode.
+
+Idempotent: a complete already-converted **per-episode** v3.0 ``out`` (codebase v3.0,
+matching episode count, ``video_files_size_in_mb == 1``) is a no-op; anything else
+(partial, a v2.1 build interrupted before conversion, or an older packed-video v3.0
+build) is rebuilt from scratch.
 
 NOTE (verify on the SFT box): this reads the source's own ``data_path`` / ``video_path``
 templates from ``info.json`` (data-driven, so robust to path layout), but the exact v2.1
@@ -57,6 +72,13 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 from maniguard_sft import embodiment as emb  # noqa: E402
+
+# One episode per v3.0 video file. Keeps every episode's `from_timestamp == 0` so query
+# timestamps stay small and torchcodec's `round(ts * average_fps)` frame lookup is exact
+# (see module docstring). 1 MB is below any single episode's mp4, so the converter never
+# packs two episodes together. Data (parquet) files stay at the lerobot default -- their
+# `timestamp` column is episode-relative regardless of packing.
+VIDEO_FILE_SIZE_MB = 1
 
 
 def _read_json(p: Path) -> dict:
@@ -89,10 +111,13 @@ def prepare(src: Path, out: Path, external_cam: str, repo_id: str) -> dict:
     if out_info.is_file():
         oi = _read_json(out_info)
         ver = str(oi.get("codebase_version", "")).lstrip("v")
-        if ver.startswith("3") and int(oi.get("total_episodes", -1)) == n_ep:
-            print(f"[prepare] already v3.0 + complete ({n_ep} episodes), skip: {out}")
+        vsize = oi.get("video_files_size_in_mb")
+        if ver.startswith("3") and int(oi.get("total_episodes", -1)) == n_ep and vsize == VIDEO_FILE_SIZE_MB:
+            print(f"[prepare] already per-episode v3.0 + complete ({n_ep} episodes, "
+                  f"video_files_size_in_mb={vsize}), skip: {out}")
             return {"repo_id": repo_id, "episodes": n_ep, "root": str(out), "skipped": True}
-        print(f"[prepare] {out} exists but is not a complete v3.0 dataset (version={ver!r}); rebuilding.")
+        print(f"[prepare] {out} exists but is not a complete per-episode v3.0 dataset "
+              f"(version={ver!r}, video_files_size_in_mb={vsize}); rebuilding.")
         shutil.rmtree(out)
     # clear any stray converter temp dirs left by a previous interrupted run
     for stray in (Path(f"{out}_v30"), Path(f"{out}_old")):
@@ -163,8 +188,10 @@ def prepare(src: Path, out: Path, external_cam: str, repo_id: str) -> dict:
     # 5) upgrade v2.1 -> v3.0 in place (lerobot 0.5.1 requires v3.0). Local, no hub push;
     #    the converter renames <out> -> <out>_old and writes the v3.0 tree back to <out>.
     from lerobot.scripts.convert_dataset_v21_to_v30 import convert_dataset
-    print(f"[prepare] upgrading v2.1 -> v3.0 in place: {out}")
-    convert_dataset(repo_id=repo_id, root=str(out), push_to_hub=False, force_conversion=True)
+    print(f"[prepare] upgrading v2.1 -> v3.0 in place "
+          f"(video_file_size_in_mb={VIDEO_FILE_SIZE_MB} = one episode per file): {out}")
+    convert_dataset(repo_id=repo_id, root=str(out), push_to_hub=False, force_conversion=True,
+                    video_file_size_in_mb=VIDEO_FILE_SIZE_MB)
     old = Path(f"{out}_old")
     if old.is_dir():
         shutil.rmtree(old)   # drop the v2.1 backup to save disk

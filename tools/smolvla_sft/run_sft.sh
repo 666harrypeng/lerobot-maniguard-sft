@@ -41,14 +41,22 @@ RENAME_MAP="${RENAME_MAP:-}"
 if [ -z "$RENAME_MAP" ]; then
   RENAME_MAP='{"observation.images.top": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}'
 fi
-# Video decode backend: pyav ships its own FFmpeg (works everywhere). torchcodec (lerobot's
-# default) needs system libavutil.so on LD_LIBRARY_PATH; set VIDEO_BACKEND=torchcodec + that
-# path for faster decode if desired.
-VIDEO_BACKEND="${VIDEO_BACKEND:-pyav}"
-# v3.0 concatenates episodes into large videos, so per-file timestamps reach thousands of
-# seconds where float32 precision (~5e-4 s) exceeds lerobot's default tolerance_s=1e-4 and
-# trips FrameTimestampError (the nearest frame is still correct). Loosen it -- 0.01 s is far
-# below the 1/fps=0.033 s frame period, so there's no wrong-frame risk.
+# Video decode backend: torchcodec (lerobot's default) is the fast path -- a cached, indexed
+# decoder that keeps the H200s fed. It needs FFmpeg's shared libs (libav*/libsw*) at runtime;
+# on a bare container point FFMPEG_LIB_DIR at a dir holding them (e.g. a conda env's lib) and
+# it is prepended to LD_LIBRARY_PATH here so the chain carries it with no manual export.
+# pyav is a correct, leak-free fallback (VIDEO_BACKEND=pyav) that ships its own FFmpeg.
+# Both are correct + fast because prepare_dataset.py builds one-episode-per-file videos
+# (from_timestamp==0), NOT the default ~200 MB packed files that made torchcodec mis-index
+# and pyav slow.
+if [ -n "${FFMPEG_LIB_DIR:-}" ]; then
+  export LD_LIBRARY_PATH="$FFMPEG_LIB_DIR:${LD_LIBRARY_PATH:-}"
+fi
+VIDEO_BACKEND="${VIDEO_BACKEND:-torchcodec}"
+# Query timestamps are episode-relative (from_timestamp==0 with one-episode-per-file), so they
+# stay in [0, episode_len] and land on real frames. tolerance_s=0.01 is a safe margin: well
+# under the 1/fps=0.033 s frame period (no wrong-frame risk) and far above float32 precision
+# at these small timestamps.
 TOLERANCE_S="${TOLERANCE_S:-0.01}"
 
 DATASET=""; REPO_ID=""; OUTPUT=""; STEPS=20000; BATCH=64; GPUS=8; WORKERS=8; SAVE_FREQ=5000; EXP_NAME=""
