@@ -45,6 +45,11 @@ fi
 # default) needs system libavutil.so on LD_LIBRARY_PATH; set VIDEO_BACKEND=torchcodec + that
 # path for faster decode if desired.
 VIDEO_BACKEND="${VIDEO_BACKEND:-pyav}"
+# v3.0 concatenates episodes into large videos, so per-file timestamps reach thousands of
+# seconds where float32 precision (~5e-4 s) exceeds lerobot's default tolerance_s=1e-4 and
+# trips FrameTimestampError (the nearest frame is still correct). Loosen it -- 0.01 s is far
+# below the 1/fps=0.033 s frame period, so there's no wrong-frame risk.
+TOLERANCE_S="${TOLERANCE_S:-0.01}"
 
 DATASET=""; REPO_ID=""; OUTPUT=""; STEPS=20000; BATCH=64; GPUS=8; WORKERS=8; SAVE_FREQ=5000; EXP_NAME=""
 EXTRA=()
@@ -103,6 +108,7 @@ echo "[run_sft] dataset=$DATASET (repo_id=$REPO_ID)  base=$BASE_MODEL  wandb=$WA
     --dataset.root="$DATASET" \
     --dataset.video_backend="$VIDEO_BACKEND" \
     --rename_map="$RENAME_MAP" \
+    --tolerance_s="$TOLERANCE_S" \
     --batch_size="$BATCH" \
     --steps="$STEPS" \
     --num_workers="$WORKERS" \
