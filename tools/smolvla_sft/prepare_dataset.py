@@ -28,8 +28,13 @@ We do it as a pure **v2.1 -> v2.1 key remap** of the source (which stays READ-ON
   - ``videos/**/<cam>/``         : the 2 kept camera dirs copied to their new key names
                                    (H.264 mp4s copied as-is -- no transcode).
 
-Idempotent at dataset granularity: a complete ``out`` is a no-op; a partial ``out``
-must be removed and retried.
+Then the copy is **upgraded v2.1 -> v3.0** in place via lerobot's
+``convert_dataset_v21_to_v30`` (lerobot 0.5.1 loads only v3.0), local + no hub push;
+the v2.1 backup ``<out>_old`` is removed. Net output = a v3.0, 2-cam, standard-keyed
+dataset that ``lerobot-train`` loads directly.
+
+Idempotent: a complete already-converted v3.0 ``out`` is a no-op; anything else
+(partial, or a v2.1 build interrupted before conversion) is rebuilt from scratch.
 
 NOTE (verify on the SFT box): this reads the source's own ``data_path`` / ``video_path``
 templates from ``info.json`` (data-driven, so robust to path layout), but the exact v2.1
@@ -78,14 +83,21 @@ def prepare(src: Path, out: Path, external_cam: str, repo_id: str) -> dict:
     drop = set(emb.dropped_streams(external_cam))   # 3 overviews + actions_commanded
     n_ep = int(info["total_episodes"])
 
-    # idempotency
+    # idempotency: a complete, already-converted v3.0 dataset is a no-op; anything else
+    # (partial, or a v2.1 build interrupted before conversion) is rebuilt from scratch.
     out_info = out / "meta" / "info.json"
     if out_info.is_file():
-        done = int(_read_json(out_info)["total_episodes"])
-        if done == n_ep:
-            print(f"[prepare] already complete ({done} episodes), skip: {out}")
-            return {"repo_id": repo_id, "episodes": done, "root": str(out), "skipped": True}
-        raise FileExistsError(f"{out} is partial ({done}/{n_ep}); rm it and retry.")
+        oi = _read_json(out_info)
+        ver = str(oi.get("codebase_version", "")).lstrip("v")
+        if ver.startswith("3") and int(oi.get("total_episodes", -1)) == n_ep:
+            print(f"[prepare] already v3.0 + complete ({n_ep} episodes), skip: {out}")
+            return {"repo_id": repo_id, "episodes": n_ep, "root": str(out), "skipped": True}
+        print(f"[prepare] {out} exists but is not a complete v3.0 dataset (version={ver!r}); rebuilding.")
+        shutil.rmtree(out)
+    # clear any stray converter temp dirs left by a previous interrupted run
+    for stray in (Path(f"{out}_v30"), Path(f"{out}_old")):
+        if stray.is_dir():
+            shutil.rmtree(stray)
 
     print(f"[prepare] {src.name}: {n_ep} episodes, external_cam={external_cam}")
     print(f"[prepare]   rename {ren}")
@@ -147,6 +159,15 @@ def prepare(src: Path, out: Path, external_cam: str, repo_id: str) -> dict:
             shutil.copy2(src_v, dst_v)
         if (ep + 1) % 100 == 0 or ep + 1 == n_ep:
             print(f"[prepare]   {ep + 1}/{n_ep} episodes")
+
+    # 5) upgrade v2.1 -> v3.0 in place (lerobot 0.5.1 requires v3.0). Local, no hub push;
+    #    the converter renames <out> -> <out>_old and writes the v3.0 tree back to <out>.
+    from lerobot.scripts.convert_dataset_v21_to_v30 import convert_dataset
+    print(f"[prepare] upgrading v2.1 -> v3.0 in place: {out}")
+    convert_dataset(repo_id=repo_id, root=str(out), push_to_hub=False, force_conversion=True)
+    old = Path(f"{out}_old")
+    if old.is_dir():
+        shutil.rmtree(old)   # drop the v2.1 backup to save disk
 
     summary = {"repo_id": repo_id, "episodes": n_ep, "root": str(out),
                "external_cam": external_cam, "skipped": False}
