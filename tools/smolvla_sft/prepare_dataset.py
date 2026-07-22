@@ -33,7 +33,7 @@ Then the copy is **upgraded v2.1 -> v3.0** in place via lerobot's
 the v2.1 backup ``<out>_old`` is removed. Net output = a v3.0, 2-cam, standard-keyed
 dataset that ``lerobot-train`` loads directly.
 
-**One episode per video file** (``video_file_size_in_mb=1``): v3.0 by default packs
+**One episode per video file** (``video_file_size_in_mb=0`` -> flush after every episode): v3.0 by default packs
 episodes into ~200 MB videos (``DEFAULT_VIDEO_FILE_SIZE_IN_MB``), so an episode's
 ``videos/<key>/from_timestamp`` (its offset inside the packed file, ``dataset_reader``:
 ``shifted_query_ts = from_timestamp + ts``) reaches thousands of seconds. At such large
@@ -73,12 +73,14 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 from maniguard_sft import embodiment as emb  # noqa: E402
 
-# One episode per v3.0 video file. Keeps every episode's `from_timestamp == 0` so query
-# timestamps stay small and torchcodec's `round(ts * average_fps)` frame lookup is exact
-# (see module docstring). 1 MB is below any single episode's mp4, so the converter never
-# packs two episodes together. Data (parquet) files stay at the lerobot default -- their
-# `timestamp` column is episode-relative regardless of packing.
-VIDEO_FILE_SIZE_MB = 1
+# STRICTLY one episode per v3.0 video file (`from_timestamp == 0` for EVERY episode) so query
+# timestamps stay in [0, episode_len] and torchcodec's `round(ts * average_fps)` frame lookup
+# is exact (see module docstring). Size 0 forces a flush after every episode
+# (`convert_videos_of_camera`: `size + ep >= 0` is always true past the first), guaranteeing
+# 1 episode/file no matter how small an episode's mp4 is -- a 1 MB cap still packed 2 tiny
+# episodes together (from_timestamp ~= 13 s, count 3238 != 2*2200). Data (parquet) files stay
+# at the lerobot default: their `timestamp` is episode-relative regardless (only video needs this).
+VIDEO_FILE_SIZE_MB = 0
 
 
 def _read_json(p: Path) -> dict:
