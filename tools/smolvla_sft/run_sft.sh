@@ -67,8 +67,11 @@ mkdir -p "$OUTPUT"
 : "${OMP_NUM_THREADS:=1}"; export OMP_NUM_THREADS
 
 # GPUS>1 -> accelerate DDP (batch is per-GPU); GPUS==1 -> plain single-process.
+# MASTER_PORT (env, default 29500) -> accelerate rendezvous port. Set a DIFFERENT value
+# (e.g. 29555) when running CONCURRENTLY with another distributed job (e.g. a GR00T run
+# on the same box uses 29500) to avoid "address already in use".
 if [ "$GPUS" -gt 1 ]; then
-    LAUNCH=(accelerate launch --multi_gpu --num_processes "$GPUS" --mixed_precision bf16 "$(command -v lerobot-train)")
+    LAUNCH=(accelerate launch --multi_gpu --num_processes "$GPUS" --main_process_port "${MASTER_PORT:-29500}" --mixed_precision bf16 "$(command -v lerobot-train)")
 else
     LAUNCH=(lerobot-train)
 fi
