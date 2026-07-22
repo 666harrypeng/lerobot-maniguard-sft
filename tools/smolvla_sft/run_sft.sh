@@ -85,6 +85,7 @@ echo "[run_sft] dataset=$DATASET (repo_id=$REPO_ID)  base=$BASE_MODEL  wandb=$WA
 "${LAUNCH[@]}" \
     --policy.path="$BASE_MODEL" \
     --policy.device=cuda \
+    --policy.push_to_hub=false \
     --dataset.repo_id="$REPO_ID" \
     --dataset.root="$DATASET" \
     --batch_size="$BATCH" \
