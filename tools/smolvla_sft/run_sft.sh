@@ -33,6 +33,19 @@ set -euo pipefail
 BASE_MODEL="${BASE_MODEL:-lerobot/smolvla_base}"
 WANDB_PROJECT="${WANDB_PROJECT:-smolvla-base-joint-2cam}"
 
+# smolvla_base's config expects cameras named camera1/camera2/camera3; our 2-cam dataset
+# uses top/wrist. Map ours -> the policy's names (a subset; SmolVLA pads the missing 3rd).
+# Passing a rename_map also skips lerobot's strict visual-feature check (factory.py:571).
+# Override via env RENAME_MAP if the base policy's camera names change.
+RENAME_MAP="${RENAME_MAP:-}"
+if [ -z "$RENAME_MAP" ]; then
+  RENAME_MAP='{"observation.images.top": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}'
+fi
+# Video decode backend: pyav ships its own FFmpeg (works everywhere). torchcodec (lerobot's
+# default) needs system libavutil.so on LD_LIBRARY_PATH; set VIDEO_BACKEND=torchcodec + that
+# path for faster decode if desired.
+VIDEO_BACKEND="${VIDEO_BACKEND:-pyav}"
+
 DATASET=""; REPO_ID=""; OUTPUT=""; STEPS=20000; BATCH=64; GPUS=8; WORKERS=8; SAVE_FREQ=5000; EXP_NAME=""
 EXTRA=()
 while [ "$#" -gt 0 ]; do
@@ -88,6 +101,8 @@ echo "[run_sft] dataset=$DATASET (repo_id=$REPO_ID)  base=$BASE_MODEL  wandb=$WA
     --policy.push_to_hub=false \
     --dataset.repo_id="$REPO_ID" \
     --dataset.root="$DATASET" \
+    --dataset.video_backend="$VIDEO_BACKEND" \
+    --rename_map="$RENAME_MAP" \
     --batch_size="$BATCH" \
     --steps="$STEPS" \
     --num_workers="$WORKERS" \
