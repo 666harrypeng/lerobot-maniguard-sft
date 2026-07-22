@@ -29,7 +29,8 @@ EPOCHS=2
 BATCH="${BATCH:-64}"          # PER-GPU batch (effective = BATCH*GPUS)
 GPUS="${GPUS:-8}"
 WORKERS="${WORKERS:-8}"       # per-GPU dataloader workers
-TAG="${TAG:-}"                # e.g. TAG=-yanZ -> HF model repo suffix
+TAG="${TAG:-}"                # e.g. TAG=-yanZ -> suffix on BOTH the HF model repo and wandb project
+export WANDB_PROJECT="${WANDB_PROJECT:-smolvla-base-joint-2cam$TAG}"   # run_sft inherits this
 RUN_ROOT="$REPO_ROOT/outputs/smolvla_sft"
 
 # family -> total frame count (the only per-dataset value; steps derive from it).
