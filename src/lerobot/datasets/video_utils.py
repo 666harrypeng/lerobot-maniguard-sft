@@ -17,11 +17,13 @@ import contextlib
 import glob
 import importlib
 import logging
+import os
 import queue
 import shutil
 import tempfile
 import threading
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -260,14 +262,27 @@ def decode_video_frames_torchvision(
 
 
 class VideoDecoderCache:
-    """Thread-safe cache for video decoders to avoid expensive re-initialization."""
+    """Thread-safe, LRU-bounded cache for video decoders to avoid expensive re-initialization.
 
-    def __init__(self):
-        self._cache: dict[str, tuple[Any, Any]] = {}
+    ManiGuard patch (bounded): upstream lerobot 0.5.1 NEVER evicts, so with one-episode-per-file
+    datasets each dataloader worker accumulates an open decoder + file handle for EVERY episode
+    video it ever touches -> unbounded RAM / file-descriptor growth that OOM-kills the box partway
+    through epoch 1 on large datasets (e.g. cabinet ~10k episodes x 2 cams x 64 workers -> crash
+    ~step 500). Shuffled training has ~no cache locality anyway, so a small bound costs nothing and
+    keeps torchcodec's fast indexed decode. Size via env LEROBOT_VIDEO_DECODER_CACHE_MAX
+    (default 256; set 0 to restore the old unbounded behavior).
+    """
+
+    def __init__(self, maxsize: int | None = None):
+        self._cache: "OrderedDict[str, tuple[Any, Any]]" = OrderedDict()
         self._lock = Lock()
+        self._maxsize = (
+            maxsize if maxsize is not None
+            else int(os.environ.get("LEROBOT_VIDEO_DECODER_CACHE_MAX", "256"))
+        )
 
     def get_decoder(self, video_path: str):
-        """Get a cached decoder or create a new one."""
+        """Get a cached decoder or create a new one (LRU-bounded)."""
         if importlib.util.find_spec("torchcodec"):
             from torchcodec.decoders import VideoDecoder
         else:
@@ -276,10 +291,20 @@ class VideoDecoderCache:
         video_path = str(video_path)
 
         with self._lock:
-            if video_path not in self._cache:
+            entry = self._cache.get(video_path)
+            if entry is None:
                 file_handle = fsspec.open(video_path).__enter__()
                 decoder = VideoDecoder(file_handle, seek_mode="approximate")
                 self._cache[video_path] = (decoder, file_handle)
+                # evict least-recently-used entries beyond maxsize, closing their file handles
+                while self._maxsize > 0 and len(self._cache) > self._maxsize:
+                    _, (_, old_handle) = self._cache.popitem(last=False)
+                    try:
+                        old_handle.close()
+                    except Exception:
+                        pass
+            else:
+                self._cache.move_to_end(video_path)
 
             return self._cache[video_path][0]
 
